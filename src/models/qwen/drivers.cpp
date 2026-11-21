@@ -237,7 +237,8 @@ std::shared_ptr<models::qwen::vision::Encoder> LoadQwenVision(
                                                    : 0;
   if (width == 0) {
     throw std::invalid_argument(
-        "image input supports Qwen3.8-27B, Qwen3.6-35B-A3B, Ornith-1.5-122B and Flash-Next");
+        "image input supports Qwen3.8-27B, Qwen3.6-35B-A3B, Ornith-1.5-122B "
+        "and Flash-Next");
   }
   auto encoder = models::qwen::vision::Encoder::Open(
       opt.model_path, opt.vision_model_path, width);
