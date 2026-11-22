@@ -937,15 +937,17 @@ QwenGpuArena::QwenGpuArena(const core::ModelConfig& config,
       // SparseAttentionConfig / dense_tail_rows; only the two switches below
       // are read from the environment.
       sparse_config.decode_enabled = SparseDecodeRequested();
-      HIP_CHECK(hipMalloc(&d_sparse_pooled,
-                          SparseAttentionPooledBytes(
-                              config_.FullAttentionLayerCount(),
-                              config_.num_key_value_heads, max_context_)));
-      HIP_CHECK(hipMalloc(
-          &d_sparse_lists,
+      const std::size_t pooled_bytes = SparseAttentionPooledBytes(
+          config_.FullAttentionLayerCount(), config_.num_key_value_heads,
+          max_context_);
+      HIP_CHECK(hipMalloc(&d_sparse_pooled, pooled_bytes));
+      HIP_CHECK(hipMemset(d_sparse_pooled, 0, pooled_bytes));
+      const std::size_t list_bytes =
           SparseAttentionListInts(max_batch_, config_.num_key_value_heads,
                                   sparse_config) *
-              sizeof(std::int32_t)));
+          sizeof(std::int32_t);
+      HIP_CHECK(hipMalloc(&d_sparse_lists, list_bytes));
+      HIP_CHECK(hipMemset(d_sparse_lists, 0, list_bytes));
       sparse_pooled_end.assign(config_.FullAttentionLayerCount(), 0u);
       sparse_enabled = true;
       std::fprintf(
