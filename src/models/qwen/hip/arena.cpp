@@ -521,10 +521,10 @@ QwenGpuMemoryUsage QwenGpuArena::EstimateMemoryUsage(
 
   // Block-sparse key bounds and block lists: per session, not snapshot state.
   if (SparseAttentionApplies(config, max_context, policy)) {
-    CheckedAdd(SparseAttentionPooledBytes(config.FullAttentionLayerCount(),
-                                          config.num_key_value_heads,
-                                          max_context),
-               &scratch);
+    CheckedAdd(
+        SparseAttentionPooledBytes(config.FullAttentionLayerCount(),
+                                   config.num_key_value_heads, max_context),
+        &scratch);
     AddAllocation(SparseAttentionListInts(batch, config.num_key_value_heads,
                                           SparseAttentionConfig{}),
                   sizeof(std::int32_t), &scratch);
@@ -954,9 +954,9 @@ QwenGpuArena::QwenGpuArena(const core::ModelConfig& config,
       // SparseAttentionConfig / dense_tail_rows; only the two switches below
       // are read from the environment.
       sparse_config.decode_enabled = SparseDecodeRequested();
-      const std::size_t pooled_bytes = SparseAttentionPooledBytes(
-          config_.FullAttentionLayerCount(), config_.num_key_value_heads,
-          max_context_);
+      const std::size_t pooled_bytes =
+          SparseAttentionPooledBytes(config_.FullAttentionLayerCount(),
+                                     config_.num_key_value_heads, max_context_);
       HIP_CHECK(hipMalloc(&d_sparse_pooled, pooled_bytes));
       HIP_CHECK(hipMemset(d_sparse_pooled, 0, pooled_bytes));
       const std::size_t list_bytes =

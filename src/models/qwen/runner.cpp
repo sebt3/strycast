@@ -734,11 +734,11 @@ public:
           policy.kv_cache_storage = kv_storage;
           return policy;
         }()),
-        prefill_alignment_(hip::QwenGpuArena::SparseAttentionApplies(
-                               model_->GetConfig(), max_context,
-                               execution_policy_)
-                               ? hip::detail::kSparseQueryRows
-                               : 1) {
+        prefill_alignment_(
+            hip::QwenGpuArena::SparseAttentionApplies(
+                model_->GetConfig(), max_context, execution_policy_)
+                ? hip::detail::kSparseQueryRows
+                : 1) {
     if (!artifact_fingerprint.empty()) {
       component_identity_ = QwenCompatibilityIdentity(
           artifact_fingerprint, draft_artifact_fingerprint, max_context_,

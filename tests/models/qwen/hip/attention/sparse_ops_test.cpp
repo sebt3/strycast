@@ -129,7 +129,8 @@ void PrefillCase(std::uint32_t heads, std::uint32_t kv_heads,
 
   std::vector<float> first;
   for (int run = 0; run < 2; ++run) {
-    HIP_CHECK(hipMemset(d_sparse.data(), 0, batch * attn_width * sizeof(float)));
+    HIP_CHECK(
+        hipMemset(d_sparse.data(), 0, batch * attn_width * sizeof(float)));
     if (!gufo::hip::LaunchQwenSparseWmmaAttention(
             d_q.data(), d_gate.data(), d_k.data(), d_v.data(), d_sparse.data(),
             d_pooled.data(), d_lists.data(), &pooled_end, 0, start_pos, batch,
@@ -137,8 +138,8 @@ void PrefillCase(std::uint32_t heads, std::uint32_t kv_heads,
       Fail("sparse prefill rejected a supported shape");
     HIP_CHECK(hipDeviceSynchronize());
     const auto got = Download(d_sparse.data(), batch * attn_width);
-    const double rel = RelativeError(got, Download(d_dense.data(),
-                                                   batch * attn_width));
+    const double rel =
+        RelativeError(got, Download(d_dense.data(), batch * attn_width));
     std::cout << "  run " << run << ": rel=" << rel << "\n";
     if (rel > 2e-3)
       Fail("sparse prefill with every block selected differs from dense");
@@ -158,15 +159,17 @@ void PrefillCase(std::uint32_t heads, std::uint32_t kv_heads,
     gufo::test::DeviceBuffer<std::int32_t> d_narrow_lists(
         gufo::hip::SparseAttentionListInts(batch, kv_heads, narrow));
     std::uint32_t narrow_end = 0;
-    HIP_CHECK(hipMemset(d_sparse.data(), 0, batch * attn_width * sizeof(float)));
+    HIP_CHECK(
+        hipMemset(d_sparse.data(), 0, batch * attn_width * sizeof(float)));
     if (!gufo::hip::LaunchQwenSparseWmmaAttention(
             d_q.data(), d_gate.data(), d_k.data(), d_v.data(), d_sparse.data(),
             d_pooled.data(), d_narrow_lists.data(), &narrow_end, 0, start_pos,
             batch, max_context, heads, kv_heads, kHeadDim, narrow, nullptr))
       Fail("sparse prefill rejected a narrow selection");
     HIP_CHECK(hipDeviceSynchronize());
-    const double rel = RelativeError(Download(d_sparse.data(), batch * attn_width),
-                                     Download(d_dense.data(), batch * attn_width));
+    const double rel =
+        RelativeError(Download(d_sparse.data(), batch * attn_width),
+                      Download(d_dense.data(), batch * attn_width));
     std::cout << "  narrow selection: rel=" << rel << " (must differ)\n";
     if (rel < 1e-3)
       Fail("a narrow selection left the output unchanged: the test is blind");
@@ -176,8 +179,8 @@ void PrefillCase(std::uint32_t heads, std::uint32_t kv_heads,
 void DecodeCase(std::uint32_t start_pos, std::uint32_t positions) {
   constexpr std::uint32_t kHeads = 16;
   constexpr std::uint32_t kKvHeads = 2;
-  std::cout << "sparse decode: start_pos=" << start_pos
-            << " rows=" << positions << "\n";
+  std::cout << "sparse decode: start_pos=" << start_pos << " rows=" << positions
+            << "\n";
   const std::uint32_t context = start_pos + positions;
   const std::uint32_t max_context = ((context + 63U) / 64U) * 64U + 64U;
   const std::size_t kv_width = std::size_t{kKvHeads} * kHeadDim;
@@ -218,18 +221,18 @@ void DecodeCase(std::uint32_t start_pos, std::uint32_t positions) {
   std::uint32_t pooled_end = 0;
   std::vector<float> first;
   for (int run = 0; run < 2; ++run) {
-    HIP_CHECK(hipMemset(d_sparse.data(), 0,
-                        positions * attn_width * sizeof(float)));
+    HIP_CHECK(
+        hipMemset(d_sparse.data(), 0, positions * attn_width * sizeof(float)));
     if (!gufo::hip::LaunchQwenSparseDecodeAttention(
             d_q.data(), d_gate.data(), d_k.data(), d_v.data(), d_sparse.data(),
             d_pooled.data(), d_lists.data(), &pooled_end, 0, start_pos,
-            positions, max_context, kHeads, kKvHeads, kHeadDim, config,
-            nullptr, {d_scratch_sparse.data(), positions * row_scratch}))
+            positions, max_context, kHeads, kKvHeads, kHeadDim, config, nullptr,
+            {d_scratch_sparse.data(), positions * row_scratch}))
       Fail("sparse decode rejected a supported shape");
     HIP_CHECK(hipDeviceSynchronize());
     const auto got = Download(d_sparse.data(), positions * attn_width);
-    const double rel = RelativeError(
-        got, Download(d_dense.data(), positions * attn_width));
+    const double rel =
+        RelativeError(got, Download(d_dense.data(), positions * attn_width));
     std::cout << "  run " << run << ": rel=" << rel << "\n";
     if (rel > 2e-3)
       Fail("sparse decode with every block selected differs from dense");
@@ -247,8 +250,8 @@ void DecodeCase(std::uint32_t start_pos, std::uint32_t positions) {
     gufo::test::DeviceBuffer<std::int32_t> d_narrow_lists(
         gufo::hip::SparseAttentionListInts(positions, kKvHeads, narrow));
     std::uint32_t narrow_end = 0;
-    HIP_CHECK(hipMemset(d_sparse.data(), 0,
-                        positions * attn_width * sizeof(float)));
+    HIP_CHECK(
+        hipMemset(d_sparse.data(), 0, positions * attn_width * sizeof(float)));
     if (!gufo::hip::LaunchQwenSparseDecodeAttention(
             d_q.data(), d_gate.data(), d_k.data(), d_v.data(), d_sparse.data(),
             d_pooled.data(), d_narrow_lists.data(), &narrow_end, 0, start_pos,
@@ -256,9 +259,9 @@ void DecodeCase(std::uint32_t start_pos, std::uint32_t positions) {
             {d_scratch_sparse.data(), positions * row_scratch}))
       Fail("sparse decode rejected a narrow selection");
     HIP_CHECK(hipDeviceSynchronize());
-    const double rel = RelativeError(
-        Download(d_sparse.data(), positions * attn_width),
-        Download(d_dense.data(), positions * attn_width));
+    const double rel =
+        RelativeError(Download(d_sparse.data(), positions * attn_width),
+                      Download(d_dense.data(), positions * attn_width));
     std::cout << "  narrow selection: rel=" << rel << " (must differ)\n";
     if (rel < 1e-3)
       Fail("a narrow selection left the output unchanged: the test is blind");

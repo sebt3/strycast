@@ -46,9 +46,9 @@ std::vector<RowRoute> Route(std::size_t from, std::size_t prompt_end,
   const std::size_t dense_from = SparseDenseTailStart(prompt_end, kTailRows);
   for (std::size_t offset = from; offset < prompt_end;) {
     std::size_t budget = std::min(pass, prompt_end - offset);
-    if (const auto end = offset + budget;
-        end < prompt_end && end % kSparseQueryRows != 0 &&
-        budget > end % kSparseQueryRows)
+    if (const auto end = offset + budget; end < prompt_end &&
+                                          end % kSparseQueryRows != 0 &&
+                                          budget > end % kSparseQueryRows)
       budget -= end % kSparseQueryRows;
     const std::size_t call_end = offset + budget;
     for (std::size_t position = offset; position < call_end;) {
@@ -86,26 +86,26 @@ void TestDenseTailStart() {
 
 void TestChunksStopAtBoundaries() {
   const std::size_t dense_from = SparseDenseTailStart(70000, kTailRows);
-  auto chunk = PlanSparsePrefillChunk(30720, 70000, kMaxBatch, kMinContext,
-                                      dense_from);
+  auto chunk =
+      PlanSparsePrefillChunk(30720, 70000, kMaxBatch, kMinContext, dense_from);
   Check(chunk.rows == 2048 && !chunk.dense_tail, "chunk stops at min_context");
-  chunk = PlanSparsePrefillChunk(66560, 70000, kMaxBatch, kMinContext,
-                                 dense_from);
+  chunk =
+      PlanSparsePrefillChunk(66560, 70000, kMaxBatch, kMinContext, dense_from);
   Check(66560 + chunk.rows == dense_from, "chunk stops at the dense tail");
   chunk = PlanSparsePrefillChunk(dense_from, 70000, kMaxBatch, kMinContext,
                                  dense_from);
   Check(chunk.dense_tail && dense_from + chunk.rows == 70000,
         "tail chunk runs to the prompt end");
-  chunk = PlanSparsePrefillChunk(40010, 70000, kMaxBatch, kMinContext,
-                                 dense_from);
+  chunk =
+      PlanSparsePrefillChunk(40010, 70000, kMaxBatch, kMinContext, dense_from);
   Check(chunk.rows == 22, "unaligned sparse start stops at the next tile");
   chunk = PlanSparsePrefillChunk(40000, 70000, 1000, kMinContext, dense_from);
   Check(chunk.rows == 992, "batch-limited sparse chunk ends on a tile");
-  chunk = PlanSparsePrefillChunk(40000, 41000, kMaxBatch, kMinContext,
-                                 dense_from);
+  chunk =
+      PlanSparsePrefillChunk(40000, 41000, kMaxBatch, kMinContext, dense_from);
   Check(chunk.rows == 1000, "chunk reaching the call end keeps every row");
-  chunk = PlanSparsePrefillChunk(1000, 5000, kMaxBatch, kMinContext,
-                                 dense_from);
+  chunk =
+      PlanSparsePrefillChunk(1000, 5000, kMaxBatch, kMinContext, dense_from);
   Check(chunk.rows == 4000, "dense rows keep the plain batch split");
 }
 

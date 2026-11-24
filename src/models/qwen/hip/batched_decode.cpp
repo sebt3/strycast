@@ -797,10 +797,10 @@ QwenGpuExecutor::ForwardVerificationBatch(
           // Block-sparse rows: a row takes the sparse route from
           // decode_min_context on, whatever segment it shares, so the rows of
           // a segment crossing it are split.
-          const bool sparse_route =
-              state_arena.sparse_enabled && !state_arena.sparse_suspended &&
-              state_arena.sparse_config.decode_enabled &&
-              !state_arena.UsesQ8AttentionKv();
+          const bool sparse_route = state_arena.sparse_enabled &&
+                                    !state_arena.sparse_suspended &&
+                                    state_arena.sparse_config.decode_enabled &&
+                                    !state_arena.UsesQ8AttentionKv();
           const std::size_t dense_rows =
               sparse_route ? detail::SparseDecodeDenseRows(
                                  start_pos, sequence_size,
