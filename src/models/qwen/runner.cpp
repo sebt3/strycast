@@ -681,6 +681,22 @@ private:
   hip::QwenGpuExecutor& executor_;
 };
 
+// Tells the session's executor where the whole prompt of one prefill step
+// ends, so block-sparse attention counts its dense tail from there.
+class SparsePromptScope {
+public:
+  SparsePromptScope(hip::QwenGpuExecutor& executor, std::size_t prompt_end)
+      : executor_(executor) {
+    executor_.SetSparsePromptEnd(prompt_end);
+  }
+  ~SparsePromptScope() { executor_.SetSparsePromptEnd(0); }
+  SparsePromptScope(const SparsePromptScope&) = delete;
+  SparsePromptScope& operator=(const SparsePromptScope&) = delete;
+
+private:
+  hip::QwenGpuExecutor& executor_;
+};
+
 // Beside decoders, prompts keep the 4,096-row pass and split it into layer
 // groups: one pass takes about 6.5 s, a decode step about 82 ms.
 constexpr std::size_t kMaxPrefillLayerGroups = 16;
@@ -717,7 +733,12 @@ public:
           auto policy = hip::QwenExecutionPolicy::Production();
           policy.kv_cache_storage = kv_storage;
           return policy;
-        }()) {
+        }()),
+        prefill_alignment_(hip::QwenGpuArena::SparseAttentionApplies(
+                               model_->GetConfig(), max_context,
+                               execution_policy_)
+                               ? hip::detail::kSparseQueryRows
+                               : 1) {
     if (!artifact_fingerprint.empty()) {
       component_identity_ = QwenCompatibilityIdentity(
           artifact_fingerprint, draft_artifact_fingerprint, max_context_,
@@ -812,6 +833,9 @@ public:
                 .prefix_reuse = true,
                 .partial_prefill_retention = true,
                 .prefill_rollback = true,
+                // Block-sparse prefill shares a selection per 32-query tile
+                // counted from position 0: passes and checkpoints end on one.
+                .prefill_alignment = prefill_alignment_,
             },
         .sampling_defaults = QwenSamplingDefaults(model_->GetConfig()),
         // Each session owns its executor, so a yield's decodes, batched
@@ -1070,6 +1094,7 @@ public:
     // layers without discarding already completed prompt work.
     auto activity = qwen.BeginPrefill();
     const PrefillYieldScope yield(qwen.executor(), state);
+    const SparsePromptScope sparse_prompt(qwen.executor(), prompt.size());
     try {
       if (offset != qwen.position()) {
         throw std::logic_error(
@@ -1078,8 +1103,11 @@ public:
       if (offset >= prompt.size()) {
         throw std::logic_error("Qwen prefill has no remaining input");
       }
-      max_input_tokens = std::min<std::size_t>(
-          max_input_tokens, qwen.executor().GetMaxPromptBatch());
+      max_input_tokens = AlignedStep(
+          offset,
+          std::min<std::size_t>(max_input_tokens,
+                                qwen.executor().GetMaxPromptBatch()),
+          prompt.size() - offset);
       const std::uint32_t keep_context_from =
           qwen.KeepDraftContextFrom(qwen.TakeDraftContextHorizon());
       if (max_input_tokens != 0 && offset != 0 &&
@@ -1325,6 +1353,18 @@ private:
     return std::clamp<std::size_t>(max_context_ / rows_per_session, 1, 8);
   }
 
+  /// Tokens one prefill step takes from `offset` within `budget`: a step that
+  /// stops before the prompt ends stops on prefill_alignment, as the serving
+  /// runner ends budget-limited ones, so a step that starts from an unaligned
+  /// reused frontier lines the next ones up again.
+  [[nodiscard]] std::size_t AlignedStep(std::size_t offset, std::size_t budget,
+                                        std::size_t remaining) const {
+    if (prefill_alignment_ <= 1 || budget >= remaining)
+      return budget;
+    const std::size_t over = (offset + budget) % prefill_alignment_;
+    return budget > over ? budget - over : budget;
+  }
+
   mutable models::qwen::vision::ImageCache image_cache_;
   std::shared_ptr<const hip::QwenGpuModel> model_;
   std::shared_ptr<const hip::QwenDFlashGpuModel> dflash_model_;
@@ -1335,6 +1375,9 @@ private:
       speculative::DFlashDraftPolicy::kAdaptive};
   std::size_t session_count_;
   hip::QwenExecutionPolicy execution_policy_;
+  /// TextRunnerCapabilities::prefill_alignment: the block-sparse query tile
+  /// when STRYCAST_SPARSE_ATTN applies to this model, 1 otherwise.
+  std::size_t prefill_alignment_;
   /// Rows a lookup copy of a request decoding alone may verify (DFlash).
   std::uint32_t copy_rows_{static_cast<std::uint32_t>(
       hip::QwenGpuExecutor::kMaxWideVerificationRows)};

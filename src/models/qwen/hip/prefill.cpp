@@ -121,18 +121,31 @@ tokenization::TokenId QwenGpuExecutor::ForwardPromptBatch(
   // With block-sparse attention the last rows of a prompt (the question) are
   // run apart and dense: they have to find things anywhere in the context, and
   // a selection made from a tile's mean query does not reliably find them.
-  const std::size_t dense_tail =
-      (arena_.sparse_enabled && compute_logits)
-          ? std::min<std::size_t>(arena_.dense_tail_rows, prompt_tokens.size())
-          : 0;
-  const std::size_t sparse_rows = prompt_tokens.size() - dense_tail;
+  // The tail is counted from the end of the whole prompt (set by the serving
+  // runner, which prefills it in several calls), or from this call's end when
+  // it computes the logits. Every row's route depends on its position only.
+  std::size_t dense_from = detail::kNoSparseDenseTail;
+  if (arena_.sparse_enabled) {
+    const std::size_t prompt_end = arena_.sparse_prompt_end >= end_pos
+                                       ? arena_.sparse_prompt_end
+                                   : compute_logits ? end_pos
+                                                    : 0;
+    if (prompt_end != 0)
+      dense_from =
+          detail::SparseDenseTailStart(prompt_end, arena_.dense_tail_rows);
+  }
   for (std::size_t offset = 0; offset < prompt_tokens.size();) {
     CheckPrefillCancellation();
-    const bool tail_chunk = dense_tail != 0 && offset >= sparse_rows;
-    const std::size_t region_end =
-        tail_chunk || dense_tail == 0 ? prompt_tokens.size() : sparse_rows;
-    const std::size_t chunk_size =
-        std::min<std::size_t>(arena_.GetMaxBatch(), region_end - offset);
+    const auto plan =
+        arena_.sparse_enabled
+            ? detail::PlanSparsePrefillChunk(
+                  start_pos + offset, end_pos, arena_.GetMaxBatch(),
+                  arena_.sparse_config.min_context, dense_from)
+            : detail::SparsePrefillChunk{
+                  .rows = std::min<std::size_t>(arena_.GetMaxBatch(),
+                                                prompt_tokens.size() - offset)};
+    const bool tail_chunk = plan.dense_tail;
+    const std::size_t chunk_size = plan.rows;
     const bool is_last = offset + chunk_size == prompt_tokens.size();
     struct Suspend {
       bool& flag;

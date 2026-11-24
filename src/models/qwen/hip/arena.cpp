@@ -519,6 +519,17 @@ QwenGpuMemoryUsage QwenGpuArena::EstimateMemoryUsage(
       CheckedMultiply(hidden, maximum_weight_width);
   AddAllocation(maximum_weight, sizeof(hip_bfloat16), &scratch);
 
+  // Block-sparse key bounds and block lists: per session, not snapshot state.
+  if (SparseAttentionApplies(config, max_context, policy)) {
+    CheckedAdd(SparseAttentionPooledBytes(config.FullAttentionLayerCount(),
+                                          config.num_key_value_heads,
+                                          max_context),
+               &scratch);
+    AddAllocation(SparseAttentionListInts(batch, config.num_key_value_heads,
+                                          SparseAttentionConfig{}),
+                  sizeof(std::int32_t), &scratch);
+  }
+
   auto& state = usage.request_state_bytes;
   const std::size_t kv_positions =
       CheckedMultiply(config.FullAttentionLayerCount(), context);
@@ -600,6 +611,16 @@ bool SparseDecodeRequested() {
   return StrictBoolEnv("STRYCAST_SPARSE_DECODE", true);
 }
 }  // namespace
+
+bool QwenGpuArena::SparseAttentionApplies(const core::ModelConfig& config,
+                                          std::uint32_t max_context,
+                                          QwenExecutionPolicy policy) {
+  // Opt-in and approximate; only the 16 query / 2 KV head shape of
+  // Qwen3.6-35B-A3B is measured, the other Qwen shapes stay dense.
+  return config.num_attention_heads == 16 && config.num_key_value_heads == 2 &&
+         policy.UsesFp16AttentionKv() && max_context <= 262144 &&
+         SparseAttentionRequested();
+}
 
 std::unique_ptr<QwenGpuSnapshot> QwenGpuArena::SaveSnapshot(
     std::uint32_t valid_context) {
@@ -928,11 +949,7 @@ QwenGpuArena::QwenGpuArena(const core::ModelConfig& config,
       HIP_CHECK(hipMalloc(&d_kv_cache, total_kv * sizeof(float) * 2));
     }
 
-    // Opt-in and approximate; only the 16 query / 2 KV head shape of
-    // Qwen3.6-35B-A3B is measured, the other Qwen shapes stay dense.
-    if (SparseAttentionRequested() && config_.num_attention_heads == 16 &&
-        config_.num_key_value_heads == 2 && policy_.UsesFp16AttentionKv() &&
-        max_context_ <= 262144) {
+    if (SparseAttentionApplies(config_, max_context_, policy_)) {
       // Selection sizes and thresholds are the constants of
       // SparseAttentionConfig / dense_tail_rows; only the two switches below
       // are read from the environment.
@@ -1114,6 +1131,7 @@ QwenGpuArena::QwenGpuArena(QwenGpuArena&& other) noexcept
   sparse_config = other.sparse_config;
   sparse_enabled = other.sparse_enabled;
   dense_tail_rows = other.dense_tail_rows;
+  sparse_prompt_end = other.sparse_prompt_end;
   d_kv_cache = other.d_kv_cache;
   d_ssm_conv_state = other.d_ssm_conv_state;
   d_ssm_deltanet_state = other.d_ssm_deltanet_state;
@@ -1229,6 +1247,7 @@ QwenGpuArena& QwenGpuArena::operator=(QwenGpuArena&& other) noexcept {
     sparse_config = other.sparse_config;
     sparse_enabled = other.sparse_enabled;
     dense_tail_rows = other.dense_tail_rows;
+    sparse_prompt_end = other.sparse_prompt_end;
     d_kv_cache = other.d_kv_cache;
     d_ssm_conv_state = other.d_ssm_conv_state;
     d_ssm_deltanet_state = other.d_ssm_deltanet_state;

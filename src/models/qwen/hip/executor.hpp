@@ -30,6 +30,7 @@
 #include <gufo/ext/experimental/hip_graph_decode_executor.hpp>
 
 #include "src/families/qwen/hip_common/execution_policy.hpp"
+#include "src/families/qwen/hip_common/sparse_attention_plan.hpp"
 #include "src/families/qwen/kernels/ops/attention.hpp"
 #include "src/families/qwen/kernels/ops/gemm.hpp"
 #include "src/families/qwen/kernels/ops/ssm.hpp"
@@ -412,6 +413,10 @@ public:
   /// Prompt rows kept dense at the end of a prefill
   /// (constant, 1024).
   std::uint32_t dense_tail_rows{1024};
+  /// End of the whole prompt being prefilled, when its prefill spans several
+  /// calls (set by the serving runner, 0 otherwise): the dense tail is counted
+  /// from it, so every piece agrees on which rows are the tail.
+  std::size_t sparse_prompt_end{0};
   /// Cached rows changed under the bounds (restore, reset): pool again.
   void InvalidateSparseAttention() noexcept {
     std::fill(sparse_pooled_end.begin(), sparse_pooled_end.end(), 0u);
@@ -480,6 +485,11 @@ public:
   [[nodiscard]] static QwenGpuMemoryUsage EstimateMemoryUsage(
       const core::ModelConfig& config, std::uint32_t max_context,
       QwenExecutionPolicy policy = QwenExecutionPolicy::Production());
+  /// Whether an arena of this shape runs the opt-in block-sparse attention
+  /// (STRYCAST_SPARSE_ATTN, measured on the 16 query / 2 KV head shape only).
+  [[nodiscard]] static bool SparseAttentionApplies(
+      const core::ModelConfig& config, std::uint32_t max_context,
+      QwenExecutionPolicy policy);
   [[nodiscard]] static std::size_t RecurrentStateBytes(
       const core::ModelConfig& config, QwenExecutionPolicy policy);
   [[nodiscard]] QwenGpuMemoryUsage GetMemoryUsage() const;
@@ -688,6 +698,11 @@ public:
 
   [[nodiscard]] std::uint32_t GetMaxPromptBatch() const noexcept {
     return arena_.GetMaxBatch();
+  }
+  /// The whole prompt a multi-call prefill belongs to ends at `end` (0: no
+  /// such prompt). Block-sparse attention counts its dense tail from there.
+  void SetSparsePromptEnd(std::size_t end) noexcept {
+    arena_.sparse_prompt_end = end;
   }
   [[nodiscard]] std::uint32_t GetMaxContext() const noexcept {
     return arena_.GetMaxContext();

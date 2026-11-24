@@ -169,19 +169,30 @@ are constants (`SparseAttentionConfig`), not settings; only the two switches
 `STRYCAST_SPARSE_ATTN` and `STRYCAST_SPARSE_DECODE` are read from the
 environment. The cost then stops growing with depth. It is training-free and
 **approximate**: greedy output is no longer byte-identical to the dense
-kernels, and two identical greedy requests can differ beyond ~60k tokens. The
-default stays exact (dense) with the variable unset.
+kernels. The default stays exact (dense) with the variable unset.
+
+Every row is routed by its position in the prompt, never by where the server
+happens to split the prefill, so the same prompt gives the same output whatever
+the pass size (`--prefill-chunk`), the checkpoint captures or an aligned cached
+prefix. For that, `gufo serve` keeps prefill passes and prompt checkpoints on
+multiples of 32 tokens while the switch is on (the query tile, as for
+Flash-Next's selection blocks). Two cases still differ from a cold prefill of
+the whole prompt: rows restored from a cached prefix keep the route they had
+when they were first computed (a previous turn's question ran as that turn's
+dense tail), and a continuation from a decoded frontier that is not on a
+32-token boundary computes its first partial tile on its own.
 
 Where it applies:
 
-- **Prefill** chunks whose visible context exceeds
-  32768 keys (near the break-even measured below). The last 1024 rows of a
-  prompt run
-  apart and dense: the question that follows a long document has to find
-  things anywhere in it, and a selection made from a tile's mean query does not
-  reliably find them (24 numeric lookups scored 12-16/24 without the tail). A
-  prompt shorter than the tail is dense.
-- **Decode and verification rows**, from 32768 keys, switchable on its own with
+- **Prefill** rows from position 32768 on (near the break-even measured
+  below); a chunk crossing it is split there. The last 1024 rows of the whole
+  prompt, from the 32-token boundary at or before them, run apart and dense,
+  however many passes the server prefills the prompt in: the question that
+  follows a long document has to find things anywhere in it, and a selection
+  made from a tile's mean query does not reliably find them (24 numeric lookups
+  scored 12-16/24 without the tail). A prompt shorter than the tail is dense.
+- **Decode and verification rows**, from position 32768 on (a verification
+  segment crossing it is split there), switchable on its own with
   `STRYCAST_SPARSE_DECODE=0` (same strict values as the main switch). Up to 32
   rows share one selection chosen from their mean query, then run the
   matrix-core decode kernel over the selected blocks. Rows are no longer
@@ -191,12 +202,12 @@ Where it applies:
   (disabled with `--kv-cache q8_0`); context <= 262144. Other Qwen shapes stay
   dense.
 - The per-layer key bounds are rebuilt lazily from the cache. A snapshot
-  restore or `Reset()` invalidates them, and so does any dense route that
-  writes cache rows below the pooled keys (regenerated turn, rejected draft,
-  dense tail).
+  restore, a prompt-cache restore or `Reset()` invalidates them, and so does
+  any dense route that writes cache rows below the pooled keys (regenerated
+  turn, rejected draft, dense tail).
 - Memory: the pooled bounds cost about 80 MiB per session at 262144 tokens
-  (10 attention layers x 2 KV heads x 4096 blocks x 1 KiB). Account for it
-  when sizing `--sessions`.
+  (10 attention layers x 2 KV heads x 4096 blocks x 1 KiB), counted in the
+  session memory estimate when the switch is on.
 - Kernels and selection are adapted from mikealanni/gufo (MIT); see NOTICE.
 
 Measured on Strix Halo (gfx1151), Q4_K_XL with DFlash2, one session of 262144,
