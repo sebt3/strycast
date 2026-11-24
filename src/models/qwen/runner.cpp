@@ -85,8 +85,19 @@ std::uint32_t ConcurrentDraftCap(std::size_t active, bool moe_target,
   return mtp_draft ? 0 : 1;
 }
 
+// The pool hands Prefill spans cut at cache checkpoints, so prompt.size() is
+// not always the end of the prompt. Both contexts therefore carry the token
+// count of the whole prompt: block-sparse attention routes its dense tail from
+// it, which keeps the KV of a request independent of the checkpoints captured
+// while it prefills.
 struct QwenImageContext final : TextPromptContext {
   std::shared_ptr<const models::qwen::vision::Prompt> prompt;
+  std::size_t prompt_tokens{0};
+};
+
+// Text-only prompt: no cache identity, so cache keys are unchanged.
+struct QwenTextContext final : TextPromptContext {
+  std::size_t prompt_tokens{0};
 };
 
 tokenization::ChatTemplateOptions QwenChatOptions(
@@ -164,8 +175,11 @@ TextPreparedPrompt PrepareQwenPrompt(
           encoder && has_images ? encoder->identity() : std::string_view{},
           max_context, request.cache_prompt ? &image_cache : nullptr));
   const auto cache_prefix = prompt->stable_prefix_tokens;
-  if (prompt->images.empty())
-    return {std::move(prompt->tokens), {}, cache_prefix};
+  if (prompt->images.empty()) {
+    auto text_context = std::make_shared<QwenTextContext>();
+    text_context->prompt_tokens = prompt->tokens.size();
+    return {std::move(prompt->tokens), std::move(text_context), cache_prefix};
+  }
   if (!encoder)
     throw std::invalid_argument(
         "image input requires a matching --mmproj BF16 sidecar");
@@ -177,6 +191,7 @@ TextPreparedPrompt PrepareQwenPrompt(
         {image.grid.offset, {identity.begin(), identity.end()}});
   }
   context->prompt = prompt;
+  context->prompt_tokens = prompt->tokens.size();
   return {prompt->tokens, std::move(context), cache_prefix};
 }
 
@@ -184,10 +199,24 @@ std::shared_ptr<const models::qwen::vision::Prompt> QwenPrompt(
     const std::shared_ptr<const TextPromptContext>& context) {
   if (!context)
     return {};
+  if (dynamic_cast<const QwenTextContext*>(context.get()) != nullptr)
+    return {};
   const auto* image = dynamic_cast<const QwenImageContext*>(context.get());
   if (!image)
     throw std::invalid_argument("invalid Qwen prompt context");
   return image->prompt;
+}
+
+// Token count of the whole prompt a context describes (0: unknown).
+std::size_t QwenPromptTokens(
+    const std::shared_ptr<const TextPromptContext>& context) {
+  if (!context)
+    return 0;
+  if (const auto* text = dynamic_cast<const QwenTextContext*>(context.get()))
+    return text->prompt_tokens;
+  if (const auto* image = dynamic_cast<const QwenImageContext*>(context.get()))
+    return image->prompt_tokens;
+  return 0;
 }
 
 inline std::string_view ChatRoleName(tokenization::ChatRole role) {
@@ -315,6 +344,14 @@ public:
     return window != 0 && horizon > window
                ? static_cast<std::uint32_t>(horizon - window)
                : 0U;
+  }
+
+  /// Token count of the whole prompt of the current request (0: unknown).
+  void set_prompt_tokens(std::size_t tokens) noexcept {
+    prompt_tokens_ = tokens;
+  }
+  [[nodiscard]] std::size_t prompt_tokens() const noexcept {
+    return prompt_tokens_;
   }
 
   void set_draft_context_horizon(std::size_t position) noexcept {
@@ -636,6 +673,7 @@ private:
   models::qwen::ContinuationAdapter* adapter_{};
   cache::Slot* slot_{};
   std::size_t draft_context_horizon_{0};
+  std::size_t prompt_tokens_{0};
   std::vector<TextRunnerToken> sequence_;
   std::size_t position_{0};
   std::optional<TextRunnerToken>& frontier_;
@@ -980,8 +1018,10 @@ public:
   void SetPromptContext(
       TextRunnerState& state,
       std::shared_ptr<const TextPromptContext> context) const override {
-    RequireQwenState(state).executor().ConfigureVision(QwenPrompt(context),
-                                                       model_->VisionEncoder());
+    auto& qwen = RequireQwenState(state);
+    qwen.set_prompt_tokens(QwenPromptTokens(context));
+    qwen.executor().ConfigureVision(QwenPrompt(context),
+                                    model_->VisionEncoder());
   }
 
   [[nodiscard]] ext::InitialOutputState InitialOutputState(
@@ -1094,7 +1134,9 @@ public:
     // layers without discarding already completed prompt work.
     auto activity = qwen.BeginPrefill();
     const PrefillYieldScope yield(qwen.executor(), state);
-    const SparsePromptScope sparse_prompt(qwen.executor(), prompt.size());
+    // The whole prompt, not the span the pool cut at a checkpoint.
+    const SparsePromptScope sparse_prompt(
+        qwen.executor(), std::max(prompt.size(), qwen.prompt_tokens()));
     try {
       if (offset != qwen.position()) {
         throw std::logic_error(

@@ -182,6 +182,14 @@ when they were first computed (a previous turn's question ran as that turn's
 dense tail), and a continuation from a decoded frontier that is not on a
 32-token boundary computes its first partial tile on its own.
 
+The dense tail is counted from the end of the whole prompt, which the runner
+reads from the prompt context (`PreparePrompt` records the token count in it;
+`SetPromptContext` hands it back before the first `Prefill`). It cannot use
+`prompt.size()`: the pool hands `Prefill` spans cut at cache checkpoints, so
+on a cold server (periodic checkpoints are captured) the end of a span is not
+the end of the prompt, and the tail would start 1024 rows before a checkpoint
+instead of before the real end.
+
 Where it applies:
 
 - **Prefill** rows from position 32768 on (near the break-even measured
