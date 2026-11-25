@@ -234,7 +234,6 @@ __launch_bounds__(256, 2) __global__
   uint4 k_cur[kKRegs];
   ValueFragment v_cur[kValueFragments];
   uint4 k_pre[kKRegs] = {};
-  ValueFragment v_pre[kValueFragments] = {};
   if (tile_count != 0) {
     load_k(tile_key(0), k_cur);
     load_v(tile_key(0), v_cur);
@@ -259,7 +258,6 @@ __launch_bounds__(256, 2) __global__
     if (has_next) {
       const std::uint32_t next_start = tile_key(tile + 1);
       load_k(next_start, k_pre);
-      load_v(next_start, v_pre);
     }
 
     // --- S = Q K^T ---
@@ -372,6 +370,11 @@ __launch_bounds__(256, 2) __global__
           kv_lds[((v_slice + (j * 8) + i) * kVtStride) + v_key] = packed[i];
         }
       }
+      // v_cur is dead once staged: fetch the next tile's V into it now. The PV
+      // work below, the next tile's QK and softmax cover the latency, and no
+      // second set of V registers stays live across the sweep.
+      if (has_next)
+        load_v(tile_key(tile + 1), v_cur);
       __syncthreads();
     }
 
@@ -396,6 +399,9 @@ __launch_bounds__(256, 2) __global__
         const std::uint32_t rb = kHeadMajor ? outer : inner;
         const std::uint32_t t = kHeadMajor ? inner : outer;
         const std::uint32_t dim_tile = wave + t * 8;
+        // Keep each (row block, dim tile) step's fragment loads next to its
+        // WMMA: left alone, the scheduler hoists every step's loads together.
+        __builtin_amdgcn_sched_barrier(0);
         v16h v_frag[kKeyBlocks];
 #pragma unroll
         for (std::uint32_t kb = 0; kb < kKeyBlocks; ++kb) {
@@ -426,9 +432,19 @@ __launch_bounds__(256, 2) __global__
             const int relative_key = static_cast<int>(first_key) -
                                      static_cast<int>(start_pos + query_start +
                                                       row_block_offset(rb));
-#pragma unroll
+            // Not unrolled: with 16 keys x 8 rows unrolled, the compiler hoists
+            // the V converts and spills the accumulators (60 B of scratch with
+            // the CI compiler, HIP Clang 24). The unpacked path reads V back
+            // from LDS, the values v_frag holds, so the key loop stays a loop.
+#pragma unroll 1
             for (std::uint32_t key = 0; key < 16; ++key) {
-              const float value = static_cast<float>(v_frag[kb][key]);
+              float value;
+              if constexpr (kHeadMajor)
+                value = static_cast<float>(v_frag[kb][key]);
+              else
+                value = __half2float(
+                    kv_lds[(((dim_tile * 16) + sub) * kVtStride) + (kb * 16) +
+                           key]);
 #pragma unroll
               for (std::uint32_t i = 0; i < 8; ++i) {
                 if (static_cast<int>(half_id) <
@@ -464,10 +480,6 @@ __launch_bounds__(256, 2) __global__
       // of fragments across the causal-tail calculation.
       if (has_next)
         load_v(tile_key(tile + 1), v_cur);
-    } else {
-#pragma unroll
-      for (std::uint32_t n = 0; n < kValueFragments; ++n)
-        v_cur[n] = v_pre[n];
     }
   }
   if (tid % kSoftmaxLanes == 0) {
